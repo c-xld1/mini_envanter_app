@@ -12,6 +12,17 @@ class InventoryService {
     return (response as List).map((e) => Product.fromJson(e)).toList();
   }
 
+  Future<void> addDailySales(String storeId, String productId, int quantity) async {
+    final user = _client.auth.currentUser;
+    await _client.from('daily_sales').insert({
+      'store_id': storeId,
+      'product_id': productId,
+      'sales_quantity': quantity,
+      'sale_date': DateTime.now().toIso8601String().split('T')[0],
+      'recorded_by': user!.id,
+    });
+  }
+
   Future<void> addInventoryCount(String storeId, String productId, int quantity, String? note) async {
     final user = _client.auth.currentUser;
     await _client.from('inventory_counts').insert({
