@@ -1,0 +1,514 @@
+Anladım, Müdür Paneli (Manager Dashboard) üzerinde köklü değişiklikler ve otomasyonlar istiyorsunuz. İsteklerinizi madde madde özetleyelim ve çözüm planımızı oluşturalım:
+
+Yapılacak Değişiklikler:
+
+Ürün Ekleme Otomasyonu (CSV & Barkod):
+
+Müdür panelindeki "Manuel Satış Girişi" bölümü tamamen kaldırılacak.
+
+Bunun yerine, Barkod Scanner entegre edilecek.
+
+Kullanıcı barkodu okuttuğunda veya ürün kodunu elle girdiğinde; sistem assets/ürün_listesi.csv dosyasını tarayacak.
+
+Eşleşen ürün bulunursa; Ürün Adı ve Koli İçi Adet alanları otomatik dolacak ve kilitlenecek (veya pasif yapılacak).
+
+Müdür sadece Başlangıç Stoğunu ve Sayımı Yapacak Kişiyi (Kendisi veya Personel) seçecek/girecek.
+
+Sayım Sorumlusu Atama:
+
+Ürün eklerken, bu ürünü kimin sayacağını belirleyen bir seçim (Dropdown) eklenecek: "Müdür (Ben)" veya "Personel".
+
+Arayüz Güncellemesi:
+
+Verdiğiniz HTML tasarımına sadık kalarak, Flutter tarafında ManagerDashboard sayfası yeniden yazılacak.
+
+Modern, koyu temalı ve kart yapılı bir tasarım uygulanacak.
+
+Gereksinimler:
+
+flutter_barcode_scanner veya benzeri bir paket (Barkod okuma için).
+
+csv paketi (CSV dosyasını okumak için).
+
+assets/ürün_listesi.csv dosyasının pubspec.yaml'a doğru tanımlanması.
+
+Uygulama Adımları:
+
+Paketlerin Eklenmesi: pubspec.yaml dosyasına gerekli paketleri ekleyeceğiz.
+
+CSV Servisi: CSV dosyasını okuyup ürün bilgilerini getiren yardımcı bir fonksiyon yazacağız.
+
+Manager Dashboard Yeniden Yazımı: HTML tasarımına uygun, barkod okuma ve otomatik doldurma özellikli yeni ekranı kodlayacağız.
+
+Hadi başlayalım.
+
+1. pubspec.yaml Güncellemesi
+Barkod okuma ve CSV işlemleri için paketleri ekliyoruz.
+
+2. CSV Okuma Servisi (lib/services/csv_service.dart)
+CSV dosyasını okuyup, barkoda göre ürün arayan bir servis yazalım. Bu, kod tekrarını önler ve performansı artırır.
+
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:csv/csv.dart';
+
+class CsvService {
+  List<List<dynamic>> _csvData = [];
+
+  // CSV verisini belleğe yükle
+  Future<void> loadCsvData() async {
+    try {
+      final rawData = await rootBundle.loadString('assets/ürün_listesi.csv');
+      // CSV'yi parse et (virgül veya noktalı virgül ayrımına dikkat edelim)
+      // Genelde Excel CSV'leri noktalı virgül kullanır, standart CSV virgül.
+      // Emniyet için default ',' kullanıyoruz, gerekirse değiştirilir.
+      _csvData = const CsvToListConverter().convert(rawData, fieldDelimiter: ';'); 
+    } catch (e) {
+      print("CSV Yükleme Hatası: $e");
+    }
+  }
+
+  // Barkoda göre ürün ara
+  // Dönüş: { 'name': 'Ürün Adı', 'boxQty': 12 } veya null
+  Map<String, dynamic>? findProductByBarcode(String barcode) {
+    if (_csvData.isEmpty) return null;
+
+    // Başlık satırını atla (i=1'den başla)
+    for (var i = 1; i < _csvData.length; i++) {
+      final row = _csvData[i];
+      if (row.isEmpty) continue;
+
+      // CSV Kolon Varsayımı: 0: Barkod, 1: Ürün Adı, 2: Koli İçi Adet
+      final rowBarcode = row[0].toString();
+      
+      if (rowBarcode == barcode) {
+        return {
+          'name': row[1].toString(),
+          'boxQty': int.tryParse(row[2].toString()) ?? 1,
+        };
+      }
+    }
+    return null;
+  }
+}
+3. Müdür Paneli (lib/screens/manager_dashboard.dart)
+HTML referansına uygun, barkod özellikli ve otomatik doldurmalı yeni Müdür Paneli.
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_barcode_scanner/flutter_barcode_scanner.dart';
+import '../models/models.dart';
+import '../services/csv_service.dart';
+import 'login_screen.dart';
+
+class ManagerDashboard extends StatefulWidget {
+  final AppUser user;
+  const ManagerDashboard({super.key, required this.user});
+
+  @override
+  State<ManagerDashboard> createState() => _ManagerDashboardState();
+}
+
+class _ManagerDashboardState extends State<ManagerDashboard> {
+  // Tasarım Renkleri
+  static const Color bgDark = Color(0xFF111722);
+  static const Color cardDark = Color(0xFF192233);
+  static const Color primary = Color(0xFF135BEC);
+  static const Color textSecondary = Color(0xFF92A4C9);
+  static const Color borderDark = Color(0xFF324467);
+
+  // Controller'lar
+  final _barcodeController = TextEditingController();
+  final _productNameController = TextEditingController();
+  final _initialStockController = TextEditingController();
+  final _boxQtyController = TextEditingController();
+
+  // Durum Değişkenleri
+  final CsvService _csvService = CsvService();
+  bool _isLoading = false;
+  String _selectedAssignee = 'mudur'; // 'mudur' veya 'personel'
+  bool _isProductFound = false; // Ürün CSV'den bulundu mu?
+
+  @override
+  void initState() {
+    super.initState();
+    _initData();
+  }
+
+  Future<void> _initData() async {
+    await _csvService.loadCsvData();
+  }
+
+  // Barkod Tarama
+  Future<void> _scanBarcode() async {
+    try {
+      String barcodeScanRes = await FlutterBarcodeScanner.scanBarcode(
+        '#ff6666', 'İptal', true, ScanMode.BARCODE);
+
+      if (barcodeScanRes != '-1') {
+        _barcodeController.text = barcodeScanRes;
+        _searchProduct(barcodeScanRes);
+      }
+    } catch (e) {
+      _showSnack('Barkod tarama hatası: $e', isError: true);
+    }
+  }
+
+  // Ürün Arama (CSV'den)
+  void _searchProduct(String barcode) {
+    if (barcode.isEmpty) return;
+
+    final product = _csvService.findProductByBarcode(barcode);
+
+    if (product != null) {
+      setState(() {
+        _productNameController.text = product['name'];
+        _boxQtyController.text = product['boxQty'].toString();
+        _isProductFound = true; // Kilitleri aktif et
+      });
+      _showSnack('Ürün bulundu: ${product['name']}', isError: false);
+    } else {
+      setState(() {
+        _productNameController.clear();
+        _boxQtyController.clear();
+        _isProductFound = false;
+      });
+      _showSnack('Ürün listede bulunamadı. Manuel giriş yapınız.', isError: true);
+    }
+  }
+
+  // Ürünü Kaydetme
+  Future<void> _saveProduct() async {
+    if (_productNameController.text.isEmpty || 
+        _initialStockController.text.isEmpty || 
+        _boxQtyController.text.isEmpty) {
+      _showSnack('Lütfen tüm alanları doldurun.', isError: true);
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final client = Supabase.instance.client;
+      
+      await client.from('products').insert({
+        'store_id': widget.user.storeId,
+        'barcode': _barcodeController.text,
+        'name': _productNameController.text,
+        'initial_stock': int.parse(_initialStockController.text),
+        'box_quantity': int.parse(_boxQtyController.text),
+        'assigned_to': _selectedAssignee, // DB'ye bu kolon eklenmeli veya logic ile yönetilmeli
+        'created_by': widget.user.id
+      });
+
+      _clearForm();
+      _showSnack('Ürün başarıyla eklendi!', isError: false);
+    } catch (e) {
+      _showSnack('Kayıt hatası: $e', isError: true);
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _clearForm() {
+    _barcodeController.clear();
+    _productNameController.clear();
+    _initialStockController.clear();
+    _boxQtyController.clear();
+    setState(() => _isProductFound = false);
+  }
+
+  void _showSnack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? Colors.redAccent : Colors.green,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _logout() {
+    Supabase.instance.client.auth.signOut();
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: bgDark,
+      // --- Header (HTML Tasarımı) ---
+      appBar: AppBar(
+        backgroundColor: bgDark.withOpacity(0.95),
+        elevation: 0,
+        bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(1),
+            child: Container(color: borderDark.withOpacity(0.5), height: 1)),
+        title: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: borderDark,
+              child: Text(widget.user.fullName[0], style: const TextStyle(color: Colors.white)),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Müdür Paneli', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                // Mağaza adını kullanıcı modelinden veya ayrı bir sorgudan alabiliriz
+                // Şimdilik statik veya user'dan gelen bilgi
+                Text('Mağaza ID: ${widget.user.storeId?.substring(0, 4) ?? "---"}', 
+                  style: TextStyle(fontSize: 12, color: textSecondary)),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            onPressed: () {}, // Bildirimler (Gelecek özellik)
+            icon: Stack(
+              children: [
+                Icon(Icons.notifications_outlined, color: textSecondary, size: 28),
+                Positioned(top: 2, right: 2, child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle))),
+              ],
+            ),
+          ),
+          IconButton(onPressed: _logout, icon: Icon(Icons.logout, color: textSecondary)),
+        ],
+      ),
+      
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // --- Hızlı Ürün Girişi Kartı ---
+            Container(
+              decoration: BoxDecoration(
+                color: cardDark,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: borderDark.withOpacity(0.5)),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 8)],
+              ),
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.add_box, color: primary),
+                      const SizedBox(width: 8),
+                      const Text('Hızlı Ürün Girişi', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // 1. Barkod Alanı (Scanner + Input)
+                  _buildLabel('Ürün Kodu / Barkod'),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildInput(
+                          controller: _barcodeController,
+                          hint: 'Barkod girin veya okutun',
+                          onChanged: _searchProduct, // Yazdıkça ara
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: _scanBarcode,
+                        child: Container(
+                          height: 48, width: 48,
+                          decoration: BoxDecoration(
+                            color: primary,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [BoxShadow(color: primary.withOpacity(0.4), blurRadius: 8)],
+                          ),
+                          child: const Icon(Icons.qr_code_scanner, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 2. Ürün Adı (Otomatik veya Manuel)
+                  _buildLabel('Ürün Adı'),
+                  _buildInput(
+                    controller: _productNameController,
+                    hint: 'Örn: Çikolatalı Gofret',
+                    isReadOnly: _isProductFound, // Bulunduysa kilitli
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 3. Yan Yana Alanlar (Stok & Koli)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildLabel('Başlangıç Stoğu'),
+                            _buildInput(
+                              controller: _initialStockController,
+                              hint: '0',
+                              inputType: TextInputType.number,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildLabel('Koli İçi Adet'),
+                            _buildInput(
+                              controller: _boxQtyController,
+                              hint: '1',
+                              inputType: TextInputType.number,
+                              isReadOnly: _isProductFound, // Bulunduysa kilitli
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 4. Sayım Sorumlusu Seçimi
+                  _buildLabel('Sayım Sorumlusu'),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: bgDark,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: borderDark),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedAssignee,
+                        dropdownColor: cardDark,
+                        isExpanded: true,
+                        style: const TextStyle(color: Colors.white),
+                        icon: Icon(Icons.arrow_drop_down, color: textSecondary),
+                        items: const [
+                          DropdownMenuItem(value: 'mudur', child: Text('Müdür (Ben)')),
+                          DropdownMenuItem(value: 'personel', child: Text('Personel')),
+                        ],
+                        onChanged: (val) => setState(() => _selectedAssignee = val!),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Kaydet Butonu
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton.icon(
+                      onPressed: _isLoading ? null : _saveProduct,
+                      icon: _isLoading 
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                        : const Icon(Icons.check),
+                      label: Text(_isLoading ? 'Kaydediliyor...' : 'Ürünü Sisteme Ekle'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: primary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // --- Personel Listesi Kısmı (Tasarım Aynen Korundu) ---
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.groups, color: Colors.purpleAccent),
+                    SizedBox(width: 8),
+                    Text('Personel Yönetimi', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                  ],
+                ),
+                TextButton(onPressed: () {}, child: const Text('Tümünü Gör')),
+              ],
+            ),
+            // Buraya personel listesi widget'ları gelebilir...
+            // Şimdilik boş bırakıyorum, önceki koddan eklenebilir.
+          ],
+        ),
+      ),
+      
+      // Bottom Nav (HTML Tasarımı)
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(
+          color: bgDark,
+          border: Border(top: BorderSide(color: borderDark)),
+        ),
+        child: BottomNavigationBar(
+          backgroundColor: bgDark,
+          selectedItemColor: primary,
+          unselectedItemColor: Colors.grey,
+          type: BottomNavigationBarType.fixed,
+          currentIndex: 0,
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: 'Panel'),
+            BottomNavigationBarItem(icon: Icon(Icons.inventory_2), label: 'Stok'),
+            // Ortadaki Büyük Buton (QR Tarama için kısayol olabilir)
+            BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner_rounded), label: ''), 
+            BottomNavigationBarItem(icon: Icon(Icons.notifications), label: 'Bildirim'),
+            BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Ayarlar'),
+          ],
+          onTap: (index) {
+            if (index == 2) _scanBarcode(); // Ortadaki butona basınca tarama aç
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(text, style: TextStyle(color: textSecondary, fontSize: 14, fontWeight: FontWeight.w500)),
+    );
+  }
+
+  Widget _buildInput({
+    required TextEditingController controller,
+    required String hint,
+    TextInputType inputType = TextInputType.text,
+    bool isReadOnly = false,
+    Function(String)? onChanged,
+  }) {
+    return Container(
+      height: 48,
+      decoration: BoxDecoration(
+        color: isReadOnly ? bgDark.withOpacity(0.5) : bgDark,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderDark),
+      ),
+      child: TextField(
+        controller: controller,
+        readOnly: isReadOnly,
+        keyboardType: inputType,
+        onChanged: onChanged,
+        style: TextStyle(color: isReadOnly ? Colors.grey : Colors.white),
+        decoration: InputDecoration(
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          hintText: hint,
+          hintStyle: TextStyle(color: textSecondary.withOpacity(0.5)),
+        ),
+      ),
+    );
+  }
+}
+
+Yapmanız Gerekenler
+Paketleri Yükleyin: Terminalde flutter pub get çalıştırın.
+
+Android Ayarı: flutter_barcode_scanner paketi için android/app/build.gradle içinde minSdkVersion değerinin en az 21 olduğundan emin olun (önceki adımda yapmıştık, kontrol etmekte fayda var).
+
+CSV Dosyası: Proje kök dizininde assets klasörü oluşturup içine ürün_listesi.csv dosyasını attığınızdan emin olun. Dosya formatı noktalı virgül (;) ile ayrılmış olmalıdır (örn: Barkod;Ürün Adı;Koli Adeti).
