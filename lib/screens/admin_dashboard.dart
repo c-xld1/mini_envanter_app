@@ -198,7 +198,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       final storeCode = _storeCodeController.text.trim();
       await Supabase.instance.client.from('stores').insert({
         'name': _storeNameController.text.trim(),
-        // 'store_code': storeCode.isEmpty ? null : storeCode, // Veritabanında store_code yoksa kapat
+        'store_code': storeCode.isEmpty ? null : storeCode,
       });
 
       _storeNameController.clear();
@@ -744,10 +744,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       ),
                       child: Text(
                           // Store code yoksa ID'nin ilk 4 hanesini göster
-                          // (store.storeCode?.isNotEmpty ?? false)
-                          //     ? '#${store.storeCode!}'
-                          //     : '#${store.id.substring(0, 4).toUpperCase()}',
-                          '#${store.id.substring(0, 4).toUpperCase()}',
+                           (store.storeCode?.isNotEmpty ?? false)
+                              ? '#${store.storeCode!}'
+                              : '#${store.id.substring(0, 4).toUpperCase()}',
                           style: const TextStyle(
                               color: textSecondary,
                               fontSize: 10,

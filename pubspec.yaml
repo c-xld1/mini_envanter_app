@@ -17,6 +17,7 @@ dependencies:
   flutter_secure_storage: ^9.0.0
   csv: ^5.0.0
   mobile_scanner: ^3.0.0
+  pinput: ^4.0.0
 
 dev_dependencies:
   flutter_test:
